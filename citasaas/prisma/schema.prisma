@@ -1,0 +1,407 @@
+// CitaSaaS - Schema Prisma Multi-Tenant
+// Todas las tablas de negocio tienen empresa_id para aislamiento de datos
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────
+// PLANES Y SUSCRIPCIONES
+// ─────────────────────────────────────────
+
+model Plan {
+  id          String   @id @default(cuid())
+  nombre      String
+  descripcion String?
+  precio      Decimal  @default(0) @db.Decimal(10, 2)
+  moneda      String   @default("USD")
+  intervalo   String   @default("monthly") // monthly | yearly
+  activo      Boolean  @default(true)
+  esPopular   Boolean  @default(false)
+  orden       Int      @default(0)
+
+  // Límites del plan (null = ilimitado)
+  limiteUsuarios      Int?
+  limiteProfesionales Int?
+  limiteClientes      Int?
+  limiteServicios     Int?
+  limiteSucursales    Int?
+  limiteCitasMes      Int?
+  limiteAlmacenMb     Int?
+  limiteRecordatorios Int?
+
+  // Funcionalidades (true = incluido)
+  tieneIA          Boolean @default(false)
+  tieneAPI         Boolean @default(false)
+  tieneWhatsApp    Boolean @default(false)
+  tieneReportes    Boolean @default(true)
+  tieneInventario  Boolean @default(false)
+  tieneSucursales  Boolean @default(false)
+  tienePersonaliz  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  empresas Empresa[]
+
+  @@map("planes")
+}
+
+// ─────────────────────────────────────────
+// EMPRESAS (tenant principal)
+// ─────────────────────────────────────────
+
+model Empresa {
+  id       String        @id @default(cuid())
+  nombre   String
+  slug     String        @unique // subdominio único
+  email    String
+  telefono String?
+  logo     String?
+  sitioWeb String?
+  timezone String        @default("America/Bogota")
+  moneda   String        @default("USD")
+  idioma   String        @default("es")
+  estado   EstadoEmpresa @default(TRIAL)
+  planId   String?
+
+  // Trial
+  trialEndsAt DateTime?
+  planInicio  DateTime?
+  planFin     DateTime?
+
+  // Config
+  colorPrimario   String @default("#4f67ff")
+  colorSecundario String @default("#3447f5")
+
+  // Dirección
+  pais      String?
+  ciudad    String?
+  direccion String?
+
+  // Stripe
+  stripeCustomerId     String? @unique
+  stripeSubscriptionId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan          Plan?          @relation(fields: [planId], references: [id])
+  usuarios      Usuario[]
+  sucursales    Sucursal[]
+  clientes      Cliente[]
+  profesionales Profesional[]
+  servicios     Servicio[]
+  citas         Cita[]
+  activityLogs  ActivityLog[]
+  notificaciones Notificacion[]
+
+  @@map("empresas")
+}
+
+enum EstadoEmpresa {
+  TRIAL
+  ACTIVA
+  SUSPENDIDA
+  CANCELADA
+  VENCIDA
+}
+
+// ─────────────────────────────────────────
+// USUARIOS (empleados de la empresa)
+// ─────────────────────────────────────────
+
+model Usuario {
+  id        String   @id @default(cuid())
+  empresaId String
+  email     String
+  nombre    String
+  apellido  String?
+  password  String
+  rol       RolUsuario @default(RECEPCIONISTA)
+  avatar    String?
+  telefono  String?
+  activo    Boolean  @default(true)
+  isSuperAdmin Boolean @default(false)
+
+  // 2FA
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret  String?
+
+  // Sesión
+  lastLoginAt DateTime?
+  lastLoginIp String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  empresa      Empresa       @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  activityLogs ActivityLog[]
+  citas        Cita[]        @relation("CitasCreadas")
+
+  @@unique([empresaId, email])
+  @@index([empresaId])
+  @@map("usuarios")
+}
+
+enum RolUsuario {
+  SUPER_ADMIN   // dueño del sistema (sin empresaId real)
+  ADMIN         // dueño de la empresa
+  GERENTE       // gerente de sucursal
+  RECEPCIONISTA // agenda y clientes
+  PROFESIONAL   // solo ve sus citas
+}
+
+// ─────────────────────────────────────────
+// SUCURSALES
+// ─────────────────────────────────────────
+
+model Sucursal {
+  id        String  @id @default(cuid())
+  empresaId String
+  nombre    String
+  direccion String?
+  telefono  String?
+  email     String?
+  activo    Boolean @default(true)
+  esMatriz  Boolean @default(false)
+
+  // Horario (JSON: { lunes: {abre:"08:00", cierra:"18:00"}, ... })
+  horario Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  empresa       Empresa       @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  profesionales Profesional[]
+  citas         Cita[]
+
+  @@index([empresaId])
+  @@map("sucursales")
+}
+
+// ─────────────────────────────────────────
+// CLIENTES
+// ─────────────────────────────────────────
+
+model Cliente {
+  id        String  @id @default(cuid())
+  empresaId String
+  nombre    String
+  apellido  String?
+  email     String?
+  telefono  String?
+  celular   String?
+  foto      String?
+  notas     String?
+  etiquetas String[] @default([])
+  estado    String   @default("activo")
+  genero    String?
+  fechaNac  DateTime?
+  documento String?
+
+  // WhatsApp
+  whatsapp String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  empresa Empresa  @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  citas   Cita[]
+  notificaciones Notificacion[]
+
+  @@index([empresaId])
+  @@index([empresaId, telefono])
+  @@map("clientes")
+}
+
+// ─────────────────────────────────────────
+// PROFESIONALES
+// ─────────────────────────────────────────
+
+model Profesional {
+  id          String  @id @default(cuid())
+  empresaId   String
+  sucursalId  String?
+  nombre      String
+  apellido    String?
+  especialidad String?
+  email       String?
+  telefono    String?
+  foto        String?
+  color       String  @default("#4f67ff")
+  activo      Boolean @default(true)
+
+  // Horario semanal (JSON)
+  horario Json?
+  // Vacaciones (JSON array de rangos de fechas)
+  vacaciones Json?
+
+  // Servicios que puede realizar (IDs)
+  serviciosIds String[] @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  empresa   Empresa   @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  sucursal  Sucursal? @relation(fields: [sucursalId], references: [id])
+  citas     Cita[]
+
+  @@index([empresaId])
+  @@map("profesionales")
+}
+
+// ─────────────────────────────────────────
+// SERVICIOS
+// ─────────────────────────────────────────
+
+model Servicio {
+  id           String  @id @default(cuid())
+  empresaId    String
+  nombre       String
+  descripcion  String?
+  precio       Decimal @default(0) @db.Decimal(10, 2)
+  duracionMin  Int     @default(60) // duración en minutos
+  color        String  @default("#4f67ff")
+  activo       Boolean @default(true)
+  categoria    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  empresa Empresa @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  citas   Cita[]
+
+  @@index([empresaId])
+  @@map("servicios")
+}
+
+// ─────────────────────────────────────────
+// CITAS (tabla central)
+// ─────────────────────────────────────────
+
+model Cita {
+  id            String     @id @default(cuid())
+  empresaId     String
+  clienteId     String
+  profesionalId String?
+  servicioId    String?
+  sucursalId    String?
+  creadoPorId   String?
+
+  fechaInicio DateTime
+  fechaFin    DateTime
+  estado      EstadoCita @default(PENDIENTE)
+
+  notas         String?
+  notasInternas String?
+  precioOriginal Decimal? @db.Decimal(10, 2)
+  precioCobrado  Decimal? @db.Decimal(10, 2)
+  metodoPago    String?
+  pagado        Boolean  @default(false)
+
+  // Recordatorio enviado
+  recordatorioEnviado Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  empresa      Empresa      @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  cliente      Cliente      @relation(fields: [clienteId], references: [id])
+  profesional  Profesional? @relation(fields: [profesionalId], references: [id])
+  servicio     Servicio?    @relation(fields: [servicioId], references: [id])
+  sucursal     Sucursal?    @relation(fields: [sucursalId], references: [id])
+  creadoPor    Usuario?     @relation("CitasCreadas", fields: [creadoPorId], references: [id])
+  notificaciones Notificacion[]
+
+  @@index([empresaId])
+  @@index([empresaId, fechaInicio])
+  @@index([empresaId, profesionalId])
+  @@index([empresaId, clienteId])
+  @@map("citas")
+}
+
+enum EstadoCita {
+  PENDIENTE
+  CONFIRMADA
+  EN_CURSO
+  COMPLETADA
+  CANCELADA
+  NO_ASISTIO
+}
+
+// ─────────────────────────────────────────
+// NOTIFICACIONES
+// ─────────────────────────────────────────
+
+model Notificacion {
+  id        String  @id @default(cuid())
+  empresaId String
+  citaId    String?
+  clienteId String?
+  canal     String  // email | whatsapp | sms | push
+  tipo      String  // confirmacion | recordatorio | cancelacion
+  estado    String  @default("pendiente") // pendiente | enviado | fallido
+  contenido String?
+  enviadoAt DateTime?
+  error     String?
+
+  createdAt DateTime @default(now())
+
+  empresa Empresa  @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  cita    Cita?    @relation(fields: [citaId], references: [id])
+  cliente Cliente? @relation(fields: [clienteId], references: [id])
+
+  @@index([empresaId])
+  @@map("notificaciones")
+}
+
+// ─────────────────────────────────────────
+// REGISTRO DE ACTIVIDAD (auditoría)
+// ─────────────────────────────────────────
+
+model ActivityLog {
+  id        String  @id @default(cuid())
+  empresaId String?
+  usuarioId String?
+  accion    String
+  entidad   String?
+  entidadId String?
+  payload   Json?
+  ip        String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  empresa Empresa? @relation(fields: [empresaId], references: [id])
+  usuario Usuario? @relation(fields: [usuarioId], references: [id])
+
+  @@index([empresaId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+// ─────────────────────────────────────────
+// CUPONES
+// ─────────────────────────────────────────
+
+model Cupon {
+  id          String   @id @default(cuid())
+  codigo      String   @unique
+  descripcion String?
+  tipo        String   // porcentaje | monto_fijo | dias_gratis
+  valor       Decimal  @db.Decimal(10, 2)
+  usos        Int      @default(0)
+  limiteUsos  Int?
+  validoHasta DateTime?
+  activo      Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+
+  @@map("cupones")
+}
